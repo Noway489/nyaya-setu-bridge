@@ -1,0 +1,10 @@
+project_id = "eztptmxomkdheyhdxxmf"
+
+[functions.legal-chat]
+verify_jwt = false
+
+[functions.fraud-check]
+verify_jwt = false
+
+[functions.document-analyze]
+verify_jwt = false

@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { FileSearch, Upload, AlertTriangle, CheckCircle, AlertCircle } from "lucide-react";
+import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
 
 const docTypes = ["Rental Agreement", "Employment Contract", "Loan Agreement", "Legal Notice", "Property Deed", "Other"];
 
@@ -18,24 +20,6 @@ interface AnalysisResult {
   clauses: Clause[];
   beforeYouSign: string[];
 }
-
-const mockAnalysis: AnalysisResult = {
-  docType: "Rental Agreement",
-  summary: "This is a standard 11-month rental agreement for a residential property in Bangalore. The agreement establishes the tenant's right to occupy the premises at a monthly rent of ₹25,000 with a security deposit of ₹1,50,000. The agreement contains several clauses that need careful review.",
-  clauses: [
-    { name: "Security Deposit (Clause 3)", risk: "review", explanation: "The security deposit is 6x monthly rent (₹1,50,000). Standard practice in Bangalore is 10x, so this is reasonable. However, ensure the refund timeline is clearly stated.", suggestion: "Add a clause specifying deposit refund within 30 days of vacating." },
-    { name: "Lock-in Period (Clause 5)", risk: "risk", explanation: "The agreement has a 6-month lock-in period. If you leave before 6 months, you forfeit the entire security deposit. This is unusually harsh.", suggestion: "Negotiate to forfeit only 1-2 months' rent instead of the full deposit." },
-    { name: "Rent Escalation (Clause 7)", risk: "risk", explanation: "Rent increases by 10% annually. This exceeds the typical 5% standard and may become unaffordable. The Karnataka Rent Control Act limits arbitrary increases.", suggestion: "Negotiate to cap annual increase at 5% or link it to official inflation rate." },
-    { name: "Maintenance Charges (Clause 8)", risk: "ok", explanation: "Maintenance charges are clearly defined at ₹3,000/month and include water, security, and common area upkeep. This is transparent and reasonable." },
-    { name: "Termination Notice (Clause 10)", risk: "ok", explanation: "Either party must give 2 months' written notice for termination. This is fair and standard practice." },
-    { name: "Subletting Restriction (Clause 12)", risk: "review", explanation: "Subletting is completely prohibited. While common, if you travel frequently, you may want to negotiate a short-term subletting clause with landlord approval." },
-  ],
-  beforeYouSign: [
-    "Negotiate the lock-in penalty from full deposit forfeiture to 1-2 months' rent",
-    "Request capping rent escalation at 5% per year",
-    "Add a clause specifying security deposit refund timeline (30 days)",
-  ],
-};
 
 const riskIcon: Record<ClauseRisk, React.ReactNode> = {
   risk: <AlertTriangle size={14} className="text-destructive" />,
@@ -64,9 +48,23 @@ const DocumentPage = () => {
   const analyze = async () => {
     if (!text.trim()) return;
     setIsAnalyzing(true);
-    await new Promise((r) => setTimeout(r, 1500));
-    setResult(mockAnalysis);
-    setIsAnalyzing(false);
+    setResult(null);
+
+    try {
+      const { data, error } = await supabase.functions.invoke("document-analyze", {
+        body: { text, docType },
+      });
+
+      if (error) throw new Error(error.message);
+      if (data?.error) throw new Error(data.error);
+
+      setResult(data as AnalysisResult);
+    } catch (e: any) {
+      console.error("Document analysis error:", e);
+      toast.error(e.message || "Failed to analyze document. Please try again.");
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   return (
