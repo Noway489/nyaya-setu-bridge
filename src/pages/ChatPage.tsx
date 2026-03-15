@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { Send, Mic, RotateCcw } from "lucide-react";
+import { toast } from "sonner";
 import AshokaChakra from "@/components/AshokaChakra";
+import { supabase } from "@/integrations/supabase/client";
 
 type Message = { role: "user" | "assistant"; content: string };
 
@@ -15,15 +17,90 @@ const exampleQuestions = [
 
 const languages = ["English", "हिन्दी", "தமிழ்", "తెలుగు", "ಕನ್ನಡ", "বাংলা", "मराठी"];
 
-const mockResponse = (q: string): string => {
-  if (q.includes("किराया") || q.toLowerCase().includes("rent") || q.toLowerCase().includes("landlord")) {
-    return `## Applicable Law\n\n\`Rent Control Act\` (varies by state) · \`Section 6-8\` — Restrictions on rent increase\n\n## Your Rights\n\n- Your landlord **cannot arbitrarily increase rent** during the tenancy period\n- Any increase must follow the percentage limits set by your state's Rent Control Act\n- You have the right to receive **written notice** (typically 1-3 months) before any increase\n- If you have a registered rental agreement, the terms in it are binding\n\n## Next Steps\n\n1. **Check your rental agreement** — look for clauses about rent revision\n2. **Verify state laws** — each state has different limits (typically 5-10% per year)\n3. **Send a written reply** to your landlord citing the Rent Control Act\n4. **If dispute continues**, approach the **Rent Control Court** in your district\n5. Contact **NALSA helpline: 15100** for free legal aid\n\n---\n*This is informational guidance, not legal advice. Consult a lawyer for your specific situation.*`;
+const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/legal-chat`;
+
+async function streamChat({
+  messages,
+  language,
+  onDelta,
+  onDone,
+  onError,
+}: {
+  messages: Message[];
+  language: string;
+  onDelta: (text: string) => void;
+  onDone: () => void;
+  onError: (err: string) => void;
+}) {
+  const resp = await fetch(CHAT_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+    },
+    body: JSON.stringify({ messages, language }),
+  });
+
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({ error: "Request failed" }));
+    onError(data.error || `Error ${resp.status}`);
+    return;
   }
-  if (q.toLowerCase().includes("salary") || q.toLowerCase().includes("employer")) {
-    return `## Applicable Law\n\n\`Payment of Wages Act, 1936\` · \`Section 5\` — Time of payment\n\`Industrial Disputes Act, 1947\` · \`Section 33C\` — Recovery of money due\n\n## Your Rights\n\n- Employer **must pay wages within 7-10 days** after the wage period\n- Non-payment is a **criminal offence** under the Payment of Wages Act\n- You can claim **compensation** for delayed payment\n\n## Next Steps\n\n1. Send a **formal written notice** to your employer demanding payment\n2. File a complaint with the **Labour Commissioner** of your district\n3. If unresolved, approach the **Labour Court** under Section 33C\n4. Call the **Shram Suvidha Helpline: 1800-11-0039** (toll-free)\n\n---\n*This is informational guidance, not legal advice.*`;
+
+  if (!resp.body) { onError("No response body"); return; }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let textBuffer = "";
+  let streamDone = false;
+
+  while (!streamDone) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    textBuffer += decoder.decode(value, { stream: true });
+
+    let newlineIndex: number;
+    while ((newlineIndex = textBuffer.indexOf("\n")) !== -1) {
+      let line = textBuffer.slice(0, newlineIndex);
+      textBuffer = textBuffer.slice(newlineIndex + 1);
+
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+      if (line.startsWith(":") || line.trim() === "") continue;
+      if (!line.startsWith("data: ")) continue;
+
+      const jsonStr = line.slice(6).trim();
+      if (jsonStr === "[DONE]") { streamDone = true; break; }
+
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+        if (content) onDelta(content);
+      } catch {
+        textBuffer = line + "\n" + textBuffer;
+        break;
+      }
+    }
   }
-  return `## General Guidance\n\nThank you for your question. Based on your query, here is what you should know:\n\n## Your Rights\n\n- Every Indian citizen has the right to **access justice** under Article 39A\n- **Free legal aid** is available through NALSA for eligible persons\n- You can approach the nearest **District Legal Services Authority**\n\n## Next Steps\n\n1. Describe your situation in more detail for specific guidance\n2. Contact **NALSA helpline: 15100** for free legal consultation\n3. Visit your nearest **Legal Aid Clinic**\n\n---\n*This is informational guidance, not legal advice.*`;
-};
+
+  // Flush remaining
+  if (textBuffer.trim()) {
+    for (let raw of textBuffer.split("\n")) {
+      if (!raw) continue;
+      if (raw.endsWith("\r")) raw = raw.slice(0, -1);
+      if (raw.startsWith(":") || raw.trim() === "") continue;
+      if (!raw.startsWith("data: ")) continue;
+      const jsonStr = raw.slice(6).trim();
+      if (jsonStr === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+        if (content) onDelta(content);
+      } catch { /* ignore */ }
+    }
+  }
+
+  onDone();
+}
 
 const ChatPage = () => {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -37,15 +114,42 @@ const ChatPage = () => {
   }, [messages, isTyping]);
 
   const sendMessage = async (text: string) => {
-    if (!text.trim()) return;
+    if (!text.trim() || isTyping) return;
     const userMsg: Message = { role: "user", content: text };
-    setMessages((prev) => [...prev, userMsg]);
+    const newMessages = [...messages, userMsg];
+    setMessages(newMessages);
     setInput("");
     setIsTyping(true);
-    await new Promise((r) => setTimeout(r, 1200));
-    const reply = mockResponse(text);
-    setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
-    setIsTyping(false);
+
+    let assistantSoFar = "";
+
+    const upsertAssistant = (chunk: string) => {
+      assistantSoFar += chunk;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role === "assistant") {
+          return prev.map((m, i) => i === prev.length - 1 ? { ...m, content: assistantSoFar } : m);
+        }
+        return [...prev, { role: "assistant", content: assistantSoFar }];
+      });
+    };
+
+    try {
+      await streamChat({
+        messages: newMessages,
+        language: activeLang,
+        onDelta: (chunk) => upsertAssistant(chunk),
+        onDone: () => setIsTyping(false),
+        onError: (err) => {
+          toast.error(err);
+          setIsTyping(false);
+        },
+      });
+    } catch (e) {
+      console.error(e);
+      toast.error("Failed to get response. Please try again.");
+      setIsTyping(false);
+    }
   };
 
   return (
@@ -111,7 +215,6 @@ const ChatPage = () => {
             <div className="flex flex-col items-center justify-center h-full text-center">
               <AshokaChakra size={40} className="text-primary/20 mb-4" />
               <p className="text-sm text-muted-foreground">Ask your legal question in any language.</p>
-              {/* Mobile examples */}
               <div className="mt-4 flex flex-wrap justify-center gap-2 md:hidden">
                 {exampleQuestions.slice(0, 3).map((q) => (
                   <button
@@ -158,7 +261,7 @@ const ChatPage = () => {
                 </div>
               </div>
             ))}
-            {isTyping && (
+            {isTyping && messages[messages.length - 1]?.role !== "assistant" && (
               <div className="flex items-center gap-2 animate-fade-in-up">
                 <AshokaChakra size={20} className="text-primary/50" />
                 <div className="flex gap-1 rounded-2xl border bg-card-warm px-4 py-3">
@@ -193,7 +296,7 @@ const ChatPage = () => {
               />
               <button
                 onClick={() => sendMessage(input)}
-                disabled={!input.trim()}
+                disabled={!input.trim() || isTyping}
                 className="flex-shrink-0 rounded-md bg-primary p-1.5 text-primary-foreground transition-colors disabled:opacity-40"
                 aria-label="Send"
               >
