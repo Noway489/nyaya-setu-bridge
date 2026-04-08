@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
 const SYSTEM_PROMPT = `You are the **Nyaya Setu Document Analyzer** — an AI tool that analyzes Indian legal documents and contracts.
@@ -23,17 +23,14 @@ serve(async (req) => {
 
   try {
     const { text, docType } = await req.json();
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
 
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const response = await fetch("https://text.pollinations.ai/openai", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
+        model: "openai",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: `Analyze this ${docType}:\n\n---\n${text}\n---` },
@@ -47,20 +44,19 @@ serve(async (req) => {
               parameters: {
                 type: "object",
                 properties: {
-                  docType: { type: "string", description: "The type of document analyzed" },
+                  docType: { type: "string", description: "Type of document analyzed" },
                   summary: { type: "string", description: "3-4 sentence plain language summary" },
                   clauses: {
                     type: "array",
                     items: {
                       type: "object",
                       properties: {
-                        name: { type: "string", description: "Clause name, e.g. 'Security Deposit (Clause 3)'" },
+                        name: { type: "string", description: "Clause name" },
                         risk: { type: "string", enum: ["risk", "review", "ok"] },
                         explanation: { type: "string", description: "Plain language explanation" },
-                        suggestion: { type: "string", description: "Negotiation suggestion, empty string if not applicable" },
+                        suggestion: { type: "string", description: "Negotiation suggestion" },
                       },
                       required: ["name", "risk", "explanation", "suggestion"],
-                      additionalProperties: false,
                     },
                   },
                   beforeYouSign: {
@@ -70,7 +66,6 @@ serve(async (req) => {
                   },
                 },
                 required: ["docType", "summary", "clauses", "beforeYouSign"],
-                additionalProperties: false,
               },
             },
           },
@@ -81,18 +76,8 @@ serve(async (req) => {
 
     if (!response.ok) {
       const status = response.status;
-      if (status === 429) {
-        return new Response(JSON.stringify({ error: "Rate limit exceeded." }), {
-          status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      if (status === 402) {
-        return new Response(JSON.stringify({ error: "AI credits exhausted." }), {
-          status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
       const t = await response.text();
-      console.error("AI gateway error:", status, t);
+      console.error("Pollinations API error:", status, t);
       return new Response(JSON.stringify({ error: "AI service error" }), {
         status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -105,6 +90,20 @@ serve(async (req) => {
       return new Response(JSON.stringify(result), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+    
+    // fallback if model doesn't use tool block properly
+    const textOutput = data.choices?.[0]?.message?.content;
+    if (textOutput) {
+       try {
+           let cleaned = textOutput.replace(/```json/g, "").replace(/```/g, "").trim();
+           const result = JSON.parse(cleaned);
+           return new Response(JSON.stringify(result), {
+               headers: { ...corsHeaders, "Content-Type": "application/json" },
+           });
+       } catch (e) {
+           // ignore
+       }
     }
 
     return new Response(JSON.stringify({ error: "Could not parse AI response" }), {

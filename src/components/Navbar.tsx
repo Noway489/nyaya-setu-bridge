@@ -8,6 +8,7 @@ const navLinks = [
   { to: "/chat", label: "Legal Chat" },
   { to: "/fraud", label: "Fraud Check" },
   { to: "/document", label: "Documents" },
+  { to: "/complaint-generator", label: "Draft Complaint" },
   { to: "/guide", label: "Guide" },
   { to: "/about", label: "About" },
 ];

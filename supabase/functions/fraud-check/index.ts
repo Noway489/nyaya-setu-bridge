@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
 const SYSTEM_PROMPT = `You are the **Nyaya Setu Fraud Detector** — an AI tool that analyzes messages for fraud, scams, and phishing attempts common in India.
@@ -25,17 +25,14 @@ serve(async (req) => {
 
   try {
     const { message } = await req.json();
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
 
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const response = await fetch("https://text.pollinations.ai/openai", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
+        model: "openai",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: `Analyze this message for fraud:\n\n"${message}"` },
@@ -50,27 +47,22 @@ serve(async (req) => {
                 type: "object",
                 properties: {
                   level: { type: "string", enum: ["high", "suspicious", "safe"], description: "Risk level" },
-                  type: { type: "string", description: "Type of fraud detected, e.g. 'Banking Impersonation Fraud'" },
-                  label: { type: "string", description: "Display label with emoji, e.g. '🔴 PHISHING ATTEMPT DETECTED'" },
-                  reasons: { type: "array", items: { type: "string" }, description: "List of reasons why this is dangerous or safe" },
-                  actions: { type: "array", items: { type: "string" }, description: "What the user should do RIGHT NOW" },
+                  type: { type: "string", description: "Type of fraud detected" },
+                  label: { type: "string", description: "Display label with emoji" },
+                  reasons: { type: "array", items: { type: "string" }, description: "Reasons" },
+                  actions: { type: "array", items: { type: "string" }, description: "What to do" },
                   reportTo: {
                     type: "array",
                     items: {
                       type: "object",
-                      properties: {
-                        label: { type: "string" },
-                        value: { type: "string" },
-                      },
+                      properties: { label: { type: "string" }, value: { type: "string" } },
                       required: ["label", "value"],
-                      additionalProperties: false,
                     },
-                    description: "Where to report this fraud",
+                    description: "Where to report",
                   },
-                  note: { type: "string", description: "Important safety note for the user" },
+                  note: { type: "string", description: "Safety note" },
                 },
                 required: ["level", "type", "label", "reasons", "actions", "reportTo", "note"],
-                additionalProperties: false,
               },
             },
           },
@@ -81,18 +73,8 @@ serve(async (req) => {
 
     if (!response.ok) {
       const status = response.status;
-      if (status === 429) {
-        return new Response(JSON.stringify({ error: "Rate limit exceeded." }), {
-          status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      if (status === 402) {
-        return new Response(JSON.stringify({ error: "AI credits exhausted." }), {
-          status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
       const t = await response.text();
-      console.error("AI gateway error:", status, t);
+      console.error("Pollinations API error:", status, t);
       return new Response(JSON.stringify({ error: "AI service error" }), {
         status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -105,6 +87,21 @@ serve(async (req) => {
       return new Response(JSON.stringify(result), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    // fallback if model doesn't use tool block properly
+    const textOutput = data.choices?.[0]?.message?.content;
+    if (textOutput) {
+       // if it returned markdown json string
+       try {
+           let cleaned = textOutput.replace(/```json/g, "").replace(/```/g, "").trim();
+           const result = JSON.parse(cleaned);
+           return new Response(JSON.stringify(result), {
+               headers: { ...corsHeaders, "Content-Type": "application/json" },
+           });
+       } catch (e) {
+           // ignore json parse error on fallback
+       }
     }
 
     return new Response(JSON.stringify({ error: "Could not parse AI response" }), {

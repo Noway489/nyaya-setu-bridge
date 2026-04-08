@@ -12,6 +12,7 @@ import FraudPage from "./pages/FraudPage";
 import DocumentPage from "./pages/DocumentPage";
 import GuidePage from "./pages/GuidePage";
 import AboutPage from "./pages/AboutPage";
+import ComplaintGenerator from "./pages/ComplaintGenerator";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -30,6 +31,7 @@ const App = () => (
               <Route path="/chat" element={<ChatPage />} />
               <Route path="/fraud" element={<FraudPage />} />
               <Route path="/document" element={<DocumentPage />} />
+              <Route path="/complaint-generator" element={<ComplaintGenerator />} />
               <Route path="/guide" element={<GuidePage />} />
               <Route path="/about" element={<AboutPage />} />
               <Route path="*" element={<NotFound />} />

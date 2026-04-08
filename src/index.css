@@ -129,3 +129,55 @@
   0%, 80%, 100% { transform: scale(0); }
   40% { transform: scale(1); }
 }
+
+/* ── Chat Revamp Styles ────────────────────────────── */
+
+/* Shimmer skeleton for typing indicator */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.shimmer-line {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 25%,
+    hsl(var(--border)) 50%,
+    hsl(var(--muted)) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Voice recording pulse */
+@keyframes voicePulse {
+  0%, 100% { box-shadow: 0 0 0 0 hsl(var(--destructive) / 0.4); }
+  50% { box-shadow: 0 0 0 8px hsl(var(--destructive) / 0); }
+}
+
+.voice-pulse {
+  animation: voicePulse 1.5s ease-in-out infinite;
+}
+
+/* Glassmorphism for assistant chat bubbles */
+.chat-glass {
+  backdrop-filter: blur(8px);
+  background: hsl(var(--card) / 0.85);
+}
+
+/* Hide scrollbar but keep scrollability */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Chat markdown prose styling */
+.prose-chat > *:first-child {
+  margin-top: 0 !important;
+}
+.prose-chat > *:last-child {
+  margin-bottom: 0 !important;
+}
