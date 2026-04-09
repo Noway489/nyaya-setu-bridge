@@ -29,6 +29,20 @@ Always structure your response with these sections using markdown:
 - For emergencies, prioritize safety and helplines first
 - Keep responses concise but thorough`;
 
+const INVALID_SIGNALS = [
+  "pollinations legacy text api",
+  "being deprecated",
+  "migrate to our new service",
+  "enter.pollinations.ai",
+];
+
+const isBadResponse = (text: string): boolean => {
+  const lower = text.toLowerCase();
+  return INVALID_SIGNALS.some((s) => lower.includes(s));
+};
+
+const MODELS = ["mistral", "llama", "openai-large", "openai"];
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
@@ -40,42 +54,109 @@ serve(async (req) => {
         ? `\n\nIMPORTANT: The user prefers ${language}. Respond in ${language} if possible.`
         : "";
 
-    const response = await fetch("https://text.pollinations.ai/openai", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "openai", // uses a capable open/free model under the hood
-        stream: true,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT + langInstruction },
-          ...messages,
-        ],
-      }),
-    });
+    const systemMsg = { role: "system", content: SYSTEM_PROMPT + langInstruction };
 
-    if (!response.ok) {
-      const status = response.status;
-      const t = await response.text();
-      console.error("Pollinations API error:", status, t);
-      return new Response(JSON.stringify({ error: "AI service error" }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    // Try each model in order — use streaming for the first valid response
+    for (let i = 0; i < MODELS.length; i++) {
+      const model = MODELS[i];
+      const isLast = i === MODELS.length - 1;
+
+      try {
+        const response = await fetch("https://text.pollinations.ai/openai", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            stream: true,
+            messages: [systemMsg, ...messages],
+          }),
+        });
+
+        if (!response.ok) {
+          console.warn(`[legal-chat] Model ${model} returned ${response.status} — trying next`);
+          if (!isLast) continue;
+          return new Response(JSON.stringify({ error: "AI service error" }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        // For all but the last fallback, peek at the first chunk to detect deprecation
+        if (!isLast && response.body) {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          const { value: firstChunk } = await reader.read();
+          const firstText = decoder.decode(firstChunk ?? new Uint8Array());
+
+          if (isBadResponse(firstText)) {
+            console.warn(`[legal-chat] Model ${model} returned deprecation notice — trying next`);
+            continue;
+          }
+
+          // Reconstruct valid stream: prepend the peeked chunk + rest
+          const prependStream = new ReadableStream({
+            start(controller) {
+              if (firstChunk) controller.enqueue(firstChunk);
+            },
+          });
+          // Pipe original reader into a new stream after the prefix
+          const remainingStream = new ReadableStream({
+            async start(controller) {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) { controller.close(); break; }
+                controller.enqueue(value);
+              }
+            },
+          });
+
+          // Merge: prefix + remaining (simplified — use TransformStream concatenation)
+          const { readable, writable } = new TransformStream();
+          const writer = writable.getWriter();
+          (async () => {
+            if (firstChunk) await writer.write(firstChunk);
+            const r2 = remainingStream.getReader();
+            while (true) {
+              const { done, value } = await r2.read();
+              if (done) { await writer.close(); break; }
+              await writer.write(value);
+            }
+          })();
+
+          return new Response(readable, {
+            headers: {
+              ...corsHeaders,
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+              Connection: "keep-alive",
+            },
+          });
+        }
+
+        // Last resort — stream directly
+        return new Response(response.body, {
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          },
+        });
+      } catch (fetchErr) {
+        console.warn(`[legal-chat] Model ${model} fetch error:`, fetchErr);
+        if (isLast) throw fetchErr;
+      }
     }
 
-    return new Response(response.body, {
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
+    return new Response(JSON.stringify({ error: "All AI models unavailable" }), {
+      status: 503,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
     console.error("legal-chat error:", e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   }
 });

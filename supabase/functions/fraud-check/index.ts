@@ -20,97 +20,159 @@ You MUST respond using the suggest_fraud_result tool with structured output. Ana
 
 Be thorough in your analysis. Indian-specific context matters — mention specific Indian laws, agencies, and helplines.`;
 
+const PLAIN_JSON_PROMPT = `You are a fraud detection AI for India. Analyze the given message and return ONLY a JSON object with this EXACT structure (no markdown, no explanation):
+{
+  "level": "high" or "suspicious" or "safe",
+  "type": "Name of fraud type or 'Legitimate Message'",
+  "label": "Short label with emoji e.g. '🚨 PHISHING DETECTED' or '✅ APPEARS SAFE'",
+  "reasons": ["reason1", "reason2", "reason3"],
+  "actions": ["action1", "action2", "action3"],
+  "reportTo": [{"label": "Cybercrime Helpline", "value": "1930"}],
+  "note": "One sentence safety note"
+}`;
+
+const INVALID_SIGNALS = ["pollinations legacy", "being deprecated", "migrate to our new service", "enter.pollinations.ai"];
+const isBadContent = (t: string) => INVALID_SIGNALS.some((s) => t.toLowerCase().includes(s));
+
+const MODELS = ["mistral", "llama", "openai-large", "openai"];
+
+const tryExtractResult = (data: any): Record<string, unknown> | null => {
+  // Try tool_calls first
+  const toolCall = data.choices?.[0]?.message?.tool_calls?.[0];
+  if (toolCall?.function?.arguments) {
+    try { return JSON.parse(toolCall.function.arguments); } catch { /* fall through */ }
+  }
+  // Try plain content JSON
+  const content = data.choices?.[0]?.message?.content as string | undefined;
+  if (content) {
+    try {
+      const cleaned = content.replace(/```json/gi, "").replace(/```/g, "").trim();
+      return JSON.parse(cleaned);
+    } catch { /* fall through */ }
+  }
+  return null;
+};
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { message } = await req.json();
+    const { message, messageType = "SMS" } = await req.json();
 
-    const response = await fetch("https://text.pollinations.ai/openai", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "openai",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: `Analyze this message for fraud:\n\n"${message}"` },
-        ],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "suggest_fraud_result",
-              description: "Return structured fraud analysis result",
-              parameters: {
-                type: "object",
-                properties: {
-                  level: { type: "string", enum: ["high", "suspicious", "safe"], description: "Risk level" },
-                  type: { type: "string", description: "Type of fraud detected" },
-                  label: { type: "string", description: "Display label with emoji" },
-                  reasons: { type: "array", items: { type: "string" }, description: "Reasons" },
-                  actions: { type: "array", items: { type: "string" }, description: "What to do" },
-                  reportTo: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: { label: { type: "string" }, value: { type: "string" } },
-                      required: ["label", "value"],
+    const userContent = `Analyze this ${messageType} message for fraud:\n\n"${message}"`;
+
+    // ── Round 1: tool_calls approach with multiple models ──
+    for (const model of MODELS) {
+      try {
+        const response = await fetch("https://text.pollinations.ai/openai", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: SYSTEM_PROMPT },
+              { role: "user", content: userContent },
+            ],
+            tools: [
+              {
+                type: "function",
+                function: {
+                  name: "suggest_fraud_result",
+                  description: "Return structured fraud analysis result",
+                  parameters: {
+                    type: "object",
+                    properties: {
+                      level: { type: "string", enum: ["high", "suspicious", "safe"] },
+                      type: { type: "string" },
+                      label: { type: "string" },
+                      reasons: { type: "array", items: { type: "string" } },
+                      actions: { type: "array", items: { type: "string" } },
+                      reportTo: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: { label: { type: "string" }, value: { type: "string" } },
+                          required: ["label", "value"],
+                        },
+                      },
+                      note: { type: "string" },
                     },
-                    description: "Where to report",
+                    required: ["level", "type", "label", "reasons", "actions", "reportTo", "note"],
                   },
-                  note: { type: "string", description: "Safety note" },
                 },
-                required: ["level", "type", "label", "reasons", "actions", "reportTo", "note"],
               },
-            },
-          },
-        ],
-        tool_choice: { type: "function", function: { name: "suggest_fraud_result" } },
-      }),
-    });
+            ],
+            tool_choice: { type: "function", function: { name: "suggest_fraud_result" } },
+          }),
+        });
 
-    if (!response.ok) {
-      const status = response.status;
-      const t = await response.text();
-      console.error("Pollinations API error:", status, t);
-      return new Response(JSON.stringify({ error: "AI service error" }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+        if (!response.ok) continue;
+
+        const data = await response.json();
+        const textContent = data.choices?.[0]?.message?.content as string | undefined;
+        if (textContent && isBadContent(textContent)) {
+          console.warn(`[fraud-check] Model ${model} returned deprecation notice — trying next`);
+          continue;
+        }
+
+        const result = tryExtractResult(data);
+        if (result) {
+          return new Response(JSON.stringify(result), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        console.warn(`[fraud-check] Model ${model} tool_calls approach failed — trying next`);
+      } catch (err) {
+        console.warn(`[fraud-check] Model ${model} error:`, err);
+      }
     }
 
-    const data = await response.json();
-    const toolCall = data.choices?.[0]?.message?.tool_calls?.[0];
-    if (toolCall?.function?.arguments) {
-      const result = JSON.parse(toolCall.function.arguments);
-      return new Response(JSON.stringify(result), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    // ── Round 2: plain JSON prompt fallback ──
+    console.warn("[fraud-check] All tool_calls attempts failed. Trying plain JSON prompt...");
+    for (const model of MODELS) {
+      try {
+        const response = await fetch("https://text.pollinations.ai/openai", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: PLAIN_JSON_PROMPT },
+              { role: "user", content: userContent },
+            ],
+            temperature: 0.1,
+          }),
+        });
+
+        if (!response.ok) continue;
+
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content as string | undefined;
+        if (!content || isBadContent(content)) continue;
+
+        try {
+          const cleaned = content.replace(/```json/gi, "").replace(/```/g, "").trim();
+          const result = JSON.parse(cleaned);
+          if (result?.level && result?.reasons) {
+            return new Response(JSON.stringify(result), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+        } catch { /* next model */ }
+      } catch (err) {
+        console.warn(`[fraud-check] Plain JSON model ${model} error:`, err);
+      }
     }
 
-    // fallback if model doesn't use tool block properly
-    const textOutput = data.choices?.[0]?.message?.content;
-    if (textOutput) {
-       // if it returned markdown json string
-       try {
-           let cleaned = textOutput.replace(/```json/g, "").replace(/```/g, "").trim();
-           const result = JSON.parse(cleaned);
-           return new Response(JSON.stringify(result), {
-               headers: { ...corsHeaders, "Content-Type": "application/json" },
-           });
-       } catch (e) {
-           // ignore json parse error on fallback
-       }
-    }
-
-    return new Response(JSON.stringify({ error: "Could not parse AI response" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    return new Response(JSON.stringify({ error: "Could not analyze message. Please try again." }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {
-    console.error("fraud-check error:", e);
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    console.error("fraud-check fatal error:", e);
+    return new Response(
+      JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   }
 });

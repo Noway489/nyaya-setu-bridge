@@ -156,3 +156,168 @@ export const DOCUMENT_TOOL = {
     },
   },
 };
+
+/* ── Complaint Generator ─────────────────────────────── */
+
+const POLLINATIONS_URL = "https://text.pollinations.ai/openai";
+
+// Words that signal a non-document response (deprecation notice, errors, etc.)
+const INVALID_RESPONSE_SIGNALS = [
+  "pollinations legacy",
+  "being deprecated",
+  "migrate to our new service",
+  "anonymous requests",
+  "important notice",
+];
+
+const isValidDraft = (text: string): boolean => {
+  if (!text?.trim() || text.length < 300) return false;
+  const lower = text.toLowerCase();
+  return !INVALID_RESPONSE_SIGNALS.some((signal) => lower.includes(signal));
+};
+
+export const COMPLAINT_GENERATE_PROMPT = `You are Nyaya Setu Legal Drafting AI — a specialist in drafting formally structured Indian legal documents.
+
+## Your Task
+Generate a COMPLETE, legally worded document based on the complaint type and user-provided details.
+
+## Strict Rules
+- Write the FULL document — not a summary or outline
+- Use formal Indian legal language and conventions throughout
+- Reference applicable Indian laws (IPC/BNS, CrPC/BNSS, RTI Act 2005, Consumer Protection Act 2019, Domestic Violence Act 2005, Labour Laws, etc.)
+- Mark EVERY missing/unknown field as [FIELD_NAME] in square brackets so the user knows what to fill in
+- Today's date placeholder: [DATE]
+- Use correct Indian legal format for each document type:
+  - FIR: Include "To, The SIC/Officer-in-Charge", relevant IPC/BNS section numbers, declaration
+  - Legal Notice: Include demand clause with a specific deadline (e.g. 15 days)
+  - Consumer Complaint: Include forum/commission hierarchy, prayer clause, verification
+  - RTI Application: Cite RTI Act 2005 Section 6(1), address to Public Information Officer
+  - Grievance Letter: Formal salutation, reference number, escalation clause
+  - Labour Complaint: Address to Labour Commissioner, cite relevant labour law sections
+  - Domestic Violence: Magistrate court format, DV Act 2005 sections, specific reliefs sought
+
+## Output Format
+Output ONLY the document in markdown. Begin directly with the document heading. No preamble, no explanation after.`;
+
+/**
+ * Generate a legal complaint draft.
+ * Tries in order:
+ *   1. Pollinations AI — mistral model (free, anonymous)
+ *   2. Pollinations AI — llama model (free, anonymous)
+ *   3. Supabase legal-chat edge function (already working in prod)
+ *   4. Gemini (if VITE_GEMINI_API_KEY is set)
+ */
+export async function generateComplaint(
+  complaintType: string,
+  formData: Record<string, string>
+): Promise<string> {
+  const fieldLines = Object.entries(formData)
+    .filter(([, v]) => v?.trim())
+    .map(([k, v]) => `- **${k}**: ${v}`)
+    .join("\n");
+
+  const userMessage = `Please draft a complete **${complaintType}** document using the following details:\n\n${fieldLines}\n\nGenerate the full, formal document now. Use [PLACEHOLDER] for any information not provided above.`;
+
+  const messages = [
+    { role: "system", content: COMPLAINT_GENERATE_PROMPT },
+    { role: "user", content: userMessage },
+  ];
+
+  // ── 1 & 2: Pollinations AI — try multiple free models ──
+  const pollinationsModels = ["mistral", "llama", "openai-large"];
+  for (const model of pollinationsModels) {
+    try {
+      const resp = await fetch(POLLINATIONS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, messages, temperature: 0.25, max_tokens: 2500 }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const draft = data.choices?.[0]?.message?.content as string | undefined;
+        if (isValidDraft(draft ?? "")) {
+          console.log(`✅ Pollinations [${model}] succeeded`);
+          return draft!;
+        }
+        console.warn(`⚠️ Pollinations [${model}] returned invalid/notice content — trying next...`);
+      }
+    } catch (err) {
+      console.warn(`Pollinations [${model}] error:`, err);
+    }
+  }
+
+  // ── 3: Supabase legal-chat edge function (robust fallback, already live) ──
+  const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+  const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
+
+  if (SUPABASE_URL && SUPABASE_KEY) {
+    try {
+      // Collect the SSE stream into a single string
+      const resp = await fetch(`${SUPABASE_URL}/functions/v1/legal-chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+        },
+        body: JSON.stringify({ messages, language: "English" }),
+      });
+
+      if (resp.ok && resp.body) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let fullText = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl: number;
+          while ((nl = buf.indexOf("\n")) !== -1) {
+            let line = buf.slice(0, nl);
+            buf = buf.slice(nl + 1);
+            if (line.endsWith("\r")) line = line.slice(0, -1);
+            if (!line.startsWith("data: ")) continue;
+            const json = line.slice(6).trim();
+            if (json === "[DONE]") break;
+            try {
+              const parsed = JSON.parse(json);
+              const chunk = parsed.choices?.[0]?.delta?.content;
+              if (chunk) fullText += chunk;
+            } catch { /* partial */ }
+          }
+        }
+
+        if (isValidDraft(fullText)) {
+          console.log("✅ Supabase legal-chat fallback succeeded");
+          return fullText;
+        }
+      }
+    } catch (err) {
+      console.warn("Supabase legal-chat fallback error:", err);
+    }
+  }
+
+  // ── 4: Gemini (requires VITE_GEMINI_API_KEY) ──
+  if (!GEMINI_API_KEY) {
+    throw new Error(
+      "All AI services are temporarily unavailable. Please wait a moment and try again."
+    );
+  }
+
+  const resp = await fetchWithRetry(GEMINI_CHAT_URL, {
+    method: "POST",
+    headers: geminiHeaders(),
+    body: JSON.stringify({ model: GEMINI_MODEL, messages, temperature: 0.25, max_tokens: 2500 }),
+  });
+
+  if (!resp.ok) {
+    const errBody = await resp.json().catch(() => ({ error: { message: "Unknown API error" } }));
+    throw new Error(errBody?.error?.message || `API error ${resp.status}`);
+  }
+
+  const data = await resp.json();
+  const draft = data.choices?.[0]?.message?.content as string | undefined;
+  if (!draft?.trim()) throw new Error("AI returned an empty response. Please try again.");
+  return draft;
+}
