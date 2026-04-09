@@ -4,6 +4,7 @@ import { FileText, AlertCircle, Phone, ChevronDown, ChevronRight, Search, Sparkl
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
+import { generateGuide } from "@/lib/gemini";
 import PageTransition from "@/components/PageTransition";
 import { fadeInUp, staggerContainer, scaleIn } from "@/lib/animations";
 
@@ -145,29 +146,13 @@ const GuidePage = () => {
 
   /* ── Direct frontend fallback ───────────────────────────── */
   const generateDirectFallback = async (topic: string): Promise<Procedure | null> => {
-    const models = ["mistral", "llama", "openai-large"];
-    for (const model of models) {
-      try {
-        const resp = await fetch(POLLINATIONS_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model,
-            temperature: 0.1,
-            messages: [
-              { role: "system", content: PLAIN_JSON_PROMPT },
-              { role: "user", content: `Generate a detailed step-by-step legal guide for: "${topic}"` },
-            ],
-          }),
-        });
-        if (!resp.ok) continue;
-        const data = await resp.json();
-        const content = data.choices?.[0]?.message?.content as string | undefined;
-        if (!content) continue;
-        const cleaned = content.replace(/```json/gi, "").replace(/```/g, "").trim();
-        const parsed = JSON.parse(cleaned);
-        if (parsed?.title && parsed?.steps) return { ...parsed, id: uid(), isCustom: true } as Procedure;
-      } catch { /* try next */ }
+    try {
+      const result = await generateGuide(topic, PLAIN_JSON_PROMPT);
+      if (result?.title && result?.steps) {
+        return { ...result, id: uid(), isCustom: true } as Procedure;
+      }
+    } catch (e) {
+      console.warn("Direct fallback generation failed:", e);
     }
     return null;
   };

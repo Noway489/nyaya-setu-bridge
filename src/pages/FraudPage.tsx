@@ -8,6 +8,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
+import { generateGuide } from "@/lib/gemini";
 import PageTransition from "@/components/PageTransition";
 import { resultSlideIn, fadeInUp, staggerContainer, scaleIn } from "@/lib/animations";
 
@@ -185,29 +186,16 @@ const FraudPage = () => {
 
   /* ── Direct frontend fallback ─────────────────────── */
   const analyzeDirectFallback = async (): Promise<FraudResult | null> => {
-    const models = ["mistral", "llama", "openai-large"];
-    for (const model of models) {
-      try {
-        const resp = await fetch(POLLINATIONS_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model,
-            temperature: 0.1,
-            messages: [
-              { role: "system", content: PLAIN_JSON_PROMPT },
-              { role: "user", content: `Analyze this ${messageType} message for fraud:\n\n"${text}"` },
-            ],
-          }),
-        });
-        if (!resp.ok) continue;
-        const data = await resp.json();
-        const content = data.choices?.[0]?.message?.content as string | undefined;
-        if (!content) continue;
-        const cleaned = content.replace(/```json/gi, "").replace(/```/g, "").trim();
-        const parsed = JSON.parse(cleaned);
-        if (parsed?.level && parsed?.reasons) return parsed as FraudResult;
-      } catch { /* try next */ }
+    try {
+      const result = await generateGuide(
+        `Analyze this ${messageType} message for fraud:\n\n"${text}"`,
+        PLAIN_JSON_PROMPT
+      );
+      if (result?.level && result?.reasons) {
+        return result as FraudResult;
+      }
+    } catch (e) {
+      console.warn("Direct fallback generation failed:", e);
     }
     return null;
   };
