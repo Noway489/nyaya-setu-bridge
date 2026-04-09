@@ -9,14 +9,34 @@ const SYSTEM_PROMPT = `You are the **Nyaya Setu Document Analyzer** — an AI to
 
 You will receive a document text and its type. Analyze every clause for risks, fairness, and compliance with Indian law.
 
-You MUST respond using the analyze_document tool with structured output.
+You MUST respond ONLY with a JSON object. Ensure you follow this exact JSON structure:
+{
+  "docType": "Type of document analyzed",
+  "summary": "3-4 sentence plain language summary",
+  "clauses": [
+    {
+       "name": "Clause Name (e.g. Security Deposit)",
+       "risk": "risk" | "review" | "ok",
+       "explanation": "Plain language explanation",
+       "suggestion": "Negotiation suggestion or empty"
+    }
+  ],
+  "beforeYouSign": [
+    "Action item 1",
+    "Action item 2"
+  ]
+}
 
-For each clause you identify:
-- Classify risk as "risk" (dangerous/unfair), "review" (needs attention), or "ok" (standard/fair)
-- Explain in plain language what the clause means
-- For risk/review items, suggest specific negotiation points
+- Classify risk as "risk" (dangerous/unfair), "review" (needs attention), or "ok" (standard/fair).
+- For risk/review items, ALWAYS suggest a specific negotiation point.
+- Reference Indian Contract Act, Rent Control Acts, RERA, or Labour Laws appropriately.
+Do not output markdown blocks, just the JSON string.
+`;
 
-Reference relevant Indian laws (Indian Contract Act, Rent Control Act, RERA, Labour Laws, etc.)`;
+const INVALID_SIGNALS = ["pollinations legacy", "being deprecated", "migrate to our new service"];
+const isBadContent = (t: string) => INVALID_SIGNALS.some((s) => t.toLowerCase().includes(s));
+
+const MODELS = ["mistral", "llama", "openai-large", "searchgpt", "openai"];
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -24,89 +44,46 @@ serve(async (req) => {
   try {
     const { text, docType } = await req.json();
 
-    const response = await fetch("https://text.pollinations.ai/openai", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "openai",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: `Analyze this ${docType}:\n\n---\n${text}\n---` },
-        ],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "analyze_document",
-              description: "Return structured document analysis",
-              parameters: {
-                type: "object",
-                properties: {
-                  docType: { type: "string", description: "Type of document analyzed" },
-                  summary: { type: "string", description: "3-4 sentence plain language summary" },
-                  clauses: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        name: { type: "string", description: "Clause name" },
-                        risk: { type: "string", enum: ["risk", "review", "ok"] },
-                        explanation: { type: "string", description: "Plain language explanation" },
-                        suggestion: { type: "string", description: "Negotiation suggestion" },
-                      },
-                      required: ["name", "risk", "explanation", "suggestion"],
-                    },
-                  },
-                  beforeYouSign: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "3-5 action items before signing",
-                  },
-                },
-                required: ["docType", "summary", "clauses", "beforeYouSign"],
-              },
-            },
-          },
-        ],
-        tool_choice: { type: "function", function: { name: "analyze_document" } },
-      }),
-    });
+    for (const model of MODELS) {
+      try {
+        const response = await fetch("https://text.pollinations.ai/openai", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            jsonMode: true,
+            temperature: 0.1,
+            messages: [
+              { role: "system", content: SYSTEM_PROMPT },
+              { role: "user", content: `Analyze this ${docType}:\n\n---\n${text}\n---` },
+            ],
+          }),
+        });
 
-    if (!response.ok) {
-      const status = response.status;
-      const t = await response.text();
-      console.error("Pollinations API error:", status, t);
-      return new Response(JSON.stringify({ error: "AI service error" }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+        if (!response.ok) continue;
+
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content;
+        
+        if (!content || isBadContent(content)) continue;
+
+        try {
+            const cleaned = content.replace(/```json/gi, "").replace(/```/g, "").trim();
+            const result = JSON.parse(cleaned);
+            if (result?.docType && result?.clauses && result?.beforeYouSign) {
+                return new Response(JSON.stringify(result), {
+                    headers: { ...corsHeaders, "Content-Type": "application/json" },
+                });
+            }
+        } catch (e) {
+            console.warn(`[document-analyze] Model ${model} JSON parse failed:`, e);
+        }
+      } catch (err) {
+         console.warn(`[document-analyze] Model ${model} fetch failed`, err);
+      }
     }
 
-    const data = await response.json();
-    const toolCall = data.choices?.[0]?.message?.tool_calls?.[0];
-    if (toolCall?.function?.arguments) {
-      const result = JSON.parse(toolCall.function.arguments);
-      return new Response(JSON.stringify(result), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-    
-    // fallback if model doesn't use tool block properly
-    const textOutput = data.choices?.[0]?.message?.content;
-    if (textOutput) {
-       try {
-           let cleaned = textOutput.replace(/```json/g, "").replace(/```/g, "").trim();
-           const result = JSON.parse(cleaned);
-           return new Response(JSON.stringify(result), {
-               headers: { ...corsHeaders, "Content-Type": "application/json" },
-           });
-       } catch (e) {
-           // ignore
-       }
-    }
-
-    return new Response(JSON.stringify({ error: "Could not parse AI response" }), {
+    return new Response(JSON.stringify({ error: "Could not parse AI response from any model." }), {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {

@@ -429,3 +429,123 @@ export async function generateGuide(
   const cleaned = rawContent.replace(/```json/gi, "").replace(/```/g, "").trim();
   return JSON.parse(cleaned);
 }
+
+export const DOCUMENT_JSON_PROMPT = `You are a legal document analyzer. Return ONLY a JSON object with this exact structure (no markdown):
+{
+  "docType": "Type of document analyzed",
+  "summary": "3-4 sentence plain language summary",
+  "clauses": [
+    {
+       "name": "Clause Name (e.g. Security Deposit)",
+       "risk": "risk" | "review" | "ok",
+       "explanation": "Plain language explanation",
+       "suggestion": "Negotiation suggestion or empty"
+    }
+  ],
+  "beforeYouSign": [
+    "Action item 1",
+    "Action item 2"
+  ]
+}`;
+
+export async function analyzeDocument(
+  text: string,
+  docType: string
+): Promise<any> {
+  const messages = [
+    { role: "system", content: DOCUMENT_JSON_PROMPT },
+    { role: "user", content: `Analyze this ${docType}:\n\n---\n${text}\n---` },
+  ];
+
+  let rawContent = "";
+
+  // ── 1. Pollinations AI ──
+  const pollinationsModels = ["mistral", "llama", "openai-large", "searchgpt", "openai"];
+  for (const model of pollinationsModels) {
+    try {
+      const resp = await fetch(POLLINATIONS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, messages, temperature: 0.1, jsonMode: true }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const draft = data.choices?.[0]?.message?.content as string | undefined;
+        if (isValidGuide(draft ?? "")) {
+          rawContent = draft!;
+          break;
+        }
+      }
+    } catch { /* next */ }
+  }
+
+  // ── 2. Supabase legal-chat fallback ──
+  if (!rawContent) {
+    const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+    const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
+    if (SUPABASE_URL && SUPABASE_KEY) {
+      try {
+        const resp = await fetch(`${SUPABASE_URL}/functions/v1/legal-chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${SUPABASE_KEY}`,
+          },
+          body: JSON.stringify({ messages, language: "English" }),
+        });
+
+        if (resp.ok && resp.body) {
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          let fullText = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            let nl: number;
+            while ((nl = buf.indexOf("\n")) !== -1) {
+              let line = buf.slice(0, nl);
+              buf = buf.slice(nl + 1);
+              if (line.endsWith("\r")) line = line.slice(0, -1);
+              if (!line.startsWith("data: ")) continue;
+              const json = line.slice(6).trim();
+              if (json === "[DONE]") break;
+              try {
+                const parsed = JSON.parse(json);
+                const chunk = parsed.choices?.[0]?.delta?.content;
+                if (chunk) fullText += chunk;
+              } catch { /* partial */ }
+            }
+          }
+          if (isValidGuide(fullText)) {
+            rawContent = fullText;
+          }
+        }
+      } catch { /* next */ }
+    }
+  }
+
+  // ── 3. Gemini ──
+  if (!rawContent && GEMINI_API_KEY) {
+    try {
+      const resp = await fetchWithRetry(GEMINI_CHAT_URL, {
+        method: "POST",
+        headers: geminiHeaders(),
+        body: JSON.stringify({ model: GEMINI_MODEL, messages, temperature: 0.1 }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const draft = data.choices?.[0]?.message?.content as string | undefined;
+        if (draft?.trim()) rawContent = draft;
+      }
+    } catch { /* fail */ }
+  }
+
+  if (!rawContent) {
+    throw new Error("All AI generation pathways failed. Please try again later.");
+  }
+
+  const cleaned = rawContent.replace(/```json/gi, "").replace(/```/g, "").trim();
+  return JSON.parse(cleaned);
+}
