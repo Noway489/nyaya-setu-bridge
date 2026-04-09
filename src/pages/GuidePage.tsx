@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { FileText, AlertCircle, Phone, ChevronDown, ChevronRight } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import PageTransition from "@/components/PageTransition";
+import { fadeInUp, staggerContainer } from "@/lib/animations";
 
 interface Step {
   title: string;
@@ -99,129 +102,141 @@ const GuidePage = () => {
   const active = procedures.find((p) => p.id === activeId)!;
 
   return (
-    <div className="flex min-h-[calc(100vh-3.5rem)] flex-col md:flex-row">
-      {/* Sidebar */}
-      <aside className="w-full border-b bg-card p-4 md:w-64 md:border-b-0 md:border-r md:p-5">
-        {/* Mobile dropdown */}
-        <div className="md:hidden">
-          <select
-            value={activeId}
-            onChange={(e) => setActiveId(e.target.value)}
-            className="w-full rounded-card border bg-background px-3 py-2 text-sm text-foreground"
-          >
-            {procedures.map((p) => (
-              <option key={p.id} value={p.id}>{p.title}</option>
-            ))}
-          </select>
-        </div>
-        {/* Desktop list */}
-        <div className="hidden md:block">
-          {categories.map((cat) => (
-            <div key={cat} className="mb-4">
-              <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{cat}</h3>
-              {procedures.filter((p) => p.category === cat).map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => { setActiveId(p.id); setExpandedStep(null); }}
-                  className={`mb-1 flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors ${
-                    activeId === p.id
-                      ? "border-l-2 border-l-primary bg-primary/5 font-medium text-primary"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <FileText size={14} />
-                  {p.title}
-                </button>
+    <PageTransition>
+      <div className="flex min-h-[calc(100vh-3.5rem)] flex-col md:flex-row">
+        {/* Sidebar */}
+        <aside className="w-full border-b bg-card p-4 md:w-64 md:border-b-0 md:border-r md:p-5">
+          <div className="md:hidden">
+            <select
+              value={activeId}
+              onChange={(e) => setActiveId(e.target.value)}
+              className="w-full rounded-card border bg-background px-3 py-2 text-sm text-foreground"
+            >
+              {procedures.map((p) => (
+                <option key={p.id} value={p.id}>{p.title}</option>
               ))}
-            </div>
-          ))}
-        </div>
-      </aside>
-
-      {/* Content */}
-      <main className="flex-1 p-6 md:p-8">
-        <div className="mx-auto max-w-2xl animate-fade-in-up">
-          {/* Hero strip */}
-          <div className="mb-6 rounded-card border bg-card-warm p-5">
-            <h1 className="font-display text-xl font-bold text-foreground md:text-2xl">{active.title}</h1>
-            <p className="mt-1 text-sm text-muted-foreground">{active.description}</p>
+            </select>
           </div>
-
-          {/* What you'll need */}
-          <div className="mb-6 rounded-card border bg-card p-5">
-            <h2 className="mb-3 text-sm font-semibold text-foreground">What You'll Need</h2>
-            <div className="grid gap-4 sm:grid-cols-3">
-              <div>
-                <h4 className="text-xs font-semibold text-muted-foreground">Documents</h4>
-                <ul className="mt-1 space-y-1">
-                  {active.documents.map((d, i) => (
-                    <li key={i} className="text-xs text-foreground">• {d}</li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <h4 className="text-xs font-semibold text-muted-foreground">Fees</h4>
-                <p className="mt-1 text-xs text-foreground">{active.fees}</p>
-              </div>
-              <div>
-                <h4 className="text-xs font-semibold text-muted-foreground">Time Estimate</h4>
-                <p className="mt-1 text-xs text-foreground">{active.timeEstimate}</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Steps */}
-          <h2 className="mb-3 text-sm font-semibold text-foreground">Step-by-Step Guide</h2>
-          <div className="space-y-3">
-            {active.steps.map((s, i) => (
-              <div key={i} className="rounded-card border bg-card p-4">
-                <button
-                  onClick={() => setExpandedStep(expandedStep === i ? null : i)}
-                  className="flex w-full items-center gap-3 text-left"
-                >
-                  <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
-                    {i + 1}
-                  </span>
-                  <span className="flex-1 text-sm font-semibold text-foreground">{s.title}</span>
-                  {expandedStep === i ? <ChevronDown size={16} className="text-muted-foreground" /> : <ChevronRight size={16} className="text-muted-foreground" />}
-                </button>
-                {expandedStep === i && (
-                  <div className="mt-3 ml-10 animate-fade-in-up">
-                    <p className="text-sm text-muted-foreground">{s.detail}</p>
-                    {s.escalation && (
-                      <div className="mt-2 rounded-md bg-warning/5 p-2 text-xs text-warning">
-                        <AlertCircle size={12} className="mr-1 inline" /> {s.escalation}
-                      </div>
-                    )}
-                  </div>
-                )}
+          <div className="hidden md:block">
+            {categories.map((cat) => (
+              <div key={cat} className="mb-4">
+                <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{cat}</h3>
+                {procedures.filter((p) => p.category === cat).map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => { setActiveId(p.id); setExpandedStep(null); }}
+                    className={`mb-1 flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors ${
+                      activeId === p.id
+                        ? "border-l-2 border-l-primary bg-primary/5 font-medium text-primary"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <FileText size={14} />
+                    {p.title}
+                  </button>
+                ))}
               </div>
             ))}
           </div>
+        </aside>
 
-          {/* Deadlines */}
-          {active.deadlines && (
-            <div className="mt-5 rounded-card border border-l-4 border-l-warning bg-warning/5 p-4">
-              <h3 className="text-xs font-semibold text-warning uppercase">Time Limits</h3>
-              <p className="mt-1 text-sm text-foreground">{active.deadlines}</p>
-            </div>
-          )}
-
-          {/* Helpline */}
-          <div className="mt-5 rounded-card bg-primary p-4">
-            <div className="flex items-center gap-3">
-              <Phone size={16} className="text-primary-foreground" />
-              <div>
-                <p className="text-xs text-primary-foreground/80">Free Help</p>
-                <p className="text-sm font-semibold text-primary-foreground">
-                  {active.helpline.label}: {active.helpline.number}
-                </p>
+        {/* Content */}
+        <main className="flex-1 p-6 md:p-8">
+          <AnimatePresence mode="wait">
+            <motion.div key={activeId} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.3 }} className="mx-auto max-w-2xl">
+              {/* Hero strip */}
+              <div className="mb-6 rounded-card border bg-card-warm p-5">
+                <h1 className="font-display text-xl font-bold text-foreground md:text-2xl">{active.title}</h1>
+                <p className="mt-1 text-sm text-muted-foreground">{active.description}</p>
               </div>
-            </div>
-          </div>
-        </div>
-      </main>
-    </div>
+
+              {/* What you'll need */}
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="mb-6 rounded-card border bg-card p-5">
+                <h2 className="mb-3 text-sm font-semibold text-foreground">What You'll Need</h2>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div>
+                    <h4 className="text-xs font-semibold text-muted-foreground">Documents</h4>
+                    <ul className="mt-1 space-y-1">
+                      {active.documents.map((d, i) => (
+                        <li key={i} className="text-xs text-foreground">• {d}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-semibold text-muted-foreground">Fees</h4>
+                    <p className="mt-1 text-xs text-foreground">{active.fees}</p>
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-semibold text-muted-foreground">Time Estimate</h4>
+                    <p className="mt-1 text-xs text-foreground">{active.timeEstimate}</p>
+                  </div>
+                </div>
+              </motion.div>
+
+              {/* Steps */}
+              <h2 className="mb-3 text-sm font-semibold text-foreground">Step-by-Step Guide</h2>
+              <motion.div variants={staggerContainer} initial="hidden" animate="visible" className="space-y-3">
+                {active.steps.map((s, i) => (
+                  <motion.div key={i} variants={fadeInUp} custom={i} className="rounded-card border bg-card p-4">
+                    <button
+                      onClick={() => setExpandedStep(expandedStep === i ? null : i)}
+                      className="flex w-full items-center gap-3 text-left"
+                    >
+                      <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
+                        {i + 1}
+                      </span>
+                      <span className="flex-1 text-sm font-semibold text-foreground">{s.title}</span>
+                      {expandedStep === i ? <ChevronDown size={16} className="text-muted-foreground" /> : <ChevronRight size={16} className="text-muted-foreground" />}
+                    </button>
+                    <AnimatePresence>
+                      {expandedStep === i && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: "auto", opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.25, ease: "easeOut" }}
+                          className="overflow-hidden"
+                        >
+                          <div className="mt-3 ml-10">
+                            <p className="text-sm text-muted-foreground">{s.detail}</p>
+                            {s.escalation && (
+                              <div className="mt-2 rounded-md bg-warning/5 p-2 text-xs text-warning">
+                                <AlertCircle size={12} className="mr-1 inline" /> {s.escalation}
+                              </div>
+                            )}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </motion.div>
+                ))}
+              </motion.div>
+
+              {/* Deadlines */}
+              {active.deadlines && (
+                <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }} className="mt-5 rounded-card border border-l-4 border-l-warning bg-warning/5 p-4">
+                  <h3 className="text-xs font-semibold text-warning uppercase">Time Limits</h3>
+                  <p className="mt-1 text-sm text-foreground">{active.deadlines}</p>
+                </motion.div>
+              )}
+
+              {/* Helpline */}
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }} className="mt-5 rounded-card bg-primary p-4">
+                <div className="flex items-center gap-3">
+                  <Phone size={16} className="text-primary-foreground" />
+                  <div>
+                    <p className="text-xs text-primary-foreground/80">Free Help</p>
+                    <p className="text-sm font-semibold text-primary-foreground">
+                      {active.helpline.label}: {active.helpline.number}
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+            </motion.div>
+          </AnimatePresence>
+        </main>
+      </div>
+    </PageTransition>
   );
 };
 
